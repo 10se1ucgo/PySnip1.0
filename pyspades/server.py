@@ -22,7 +22,7 @@ from pyspades.bytes import ByteReader, ByteWriter
 from pyspades.packet import load_client_packet
 from pyspades.common import *
 from pyspades.constants import *
-from pyspades import contained as loaders
+from . import contained as loaders
 from pyspades.types import MultikeyDict, IDPool
 from pyspades.master import get_master_connection
 from pyspades.collision import vector_collision, collision_3d
@@ -44,12 +44,16 @@ create_player = loaders.CreatePlayer()
 position_data = loaders.PositionData()
 orientation_data = loaders.OrientationData()
 input_data = loaders.InputData()
-grenade_packet = loaders.GrenadePacket()
+rpg_packet = loaders.UseOrientedItem()
+rpg_packet.tool = RPG_TOOL
+grenade_packet = loaders.UseOrientedItem()
+grenade_packet.tool = GRENADE_TOOL
 set_tool = loaders.SetTool()
 set_color = loaders.SetColor()
 fog_color = loaders.FogColor()
 existing_player = loaders.ExistingPlayer()
 player_left = loaders.PlayerLeft()
+server_block_action = loaders.ServerBlockAction()
 block_action = loaders.BlockAction()
 kill_action = loaders.KillAction()
 chat_message = loaders.ChatMessage()
@@ -58,20 +62,26 @@ map_start = loaders.MapStart()
 state_data = loaders.StateData()
 ctf_data = loaders.CTFState()
 tc_data = loaders.TCState()
-intel_drop = loaders.IntelDrop()
-intel_pickup = loaders.IntelPickup()
-intel_capture = loaders.IntelCapture()
+create_entity = loaders.CreateEntity()
+change_entity = loaders.ChangeEntity()
+destroy_entity = loaders.DestroyEntity()
+# intel_drop = loaders.IntelDrop()
+# intel_pickup = loaders.IntelPickup()
+# intel_capture = loaders.IntelCapture()
 restock = loaders.Restock()
-move_object = loaders.MoveObject()
+# move_object = loaders.MoveObject()
 set_hp = loaders.SetHP()
 change_weapon = loaders.ChangeWeapon()
 change_team = loaders.ChangeTeam()
 weapon_reload = loaders.WeaponReload()
-territory_capture = loaders.TerritoryCapture()
+# territory_capture = loaders.TerritoryCapture()
 progress_bar = loaders.ProgressBar()
 world_update = loaders.WorldUpdate()
 block_line = loaders.BlockLine()
 weapon_input = loaders.WeaponInput()
+set_score = loaders.SetScore()
+sound_play = loaders.PlaySound()
+sound_stop = loaders.StopSound()
 
 def check_nan(*values):
     for value in values:
@@ -424,7 +434,14 @@ class ServerConnection(BaseConnection):
                     elif returned is not None:
                         hit_amount = returned
                     player.hit(hit_amount, self, type)
-                elif contained.id == loaders.GrenadePacket.id:
+                elif contained.id == loaders.UseOrientedItem.id:
+                    if contained.tool == GRENADE_TOOL:
+                        print "Player threw grenade"
+                    elif contained.tool == RPG_WEAPON:
+                        print "Player used RPG"
+                    else:
+                        print "Invalid item type."
+
                     if check_nan(contained.value) or check_nan(*contained.position) or check_nan(*contained.velocity):
                         self.on_hack_attempt("Invalid grenade data")
                         return
@@ -444,8 +461,9 @@ class ServerConnection(BaseConnection):
                     if self.filter_visibility_data:
                         return
                     contained.player_id = self.player_id
-                    self.protocol.send_contained(contained, 
+                    self.protocol.send_contained(contained,
                         sender = self)
+
                 elif contained.id == loaders.SetTool.id:
                     if self.on_tool_set_attempt(contained.value) == False:
                         return
@@ -757,8 +775,10 @@ class ServerConnection(BaseConnection):
         if self.on_flag_take() == False:
             return
         flag.player = self
-        intel_pickup.player_id = self.player_id
-        self.protocol.send_contained(intel_pickup, save = True)
+        change_entity.carrier = self.player_id
+        change_entity.type = SET_CARRIER
+        change_entity.entity_id = flag.id
+        self.protocol.send_contained(change_entity, save = True)
 
     def capture_flag(self):
         other_team = self.team.other
@@ -773,10 +793,14 @@ class ServerConnection(BaseConnection):
             self.protocol.reset_game(self)
             self.protocol.on_game_end()
         else:
-            intel_capture.player_id = self.player_id
-            intel_capture.winning = False
-            self.protocol.send_contained(intel_capture, save = True)
             self.team.score += 1
+            # intel_capture.player_id = self.player_id
+            # intel_capture.winning = False
+            # self.protocol.send_contained(intel_capture, save = True)
+            set_score.type = SET_TEAM_SCORE
+            set_score.specifier = self.team.id
+            set_score.value = self.team.score
+            self.protocol.send_contained(set_score, save=True)
             flag = other_team.set_flag()
             flag.update()
             self.on_flag_capture()
@@ -796,11 +820,16 @@ class ServerConnection(BaseConnection):
                 z = self.protocol.map.get_z(x, y, z)
                 flag.set(x, y, z)
                 flag.player = None
-                intel_drop.player_id = self.player_id
-                intel_drop.x = flag.x
-                intel_drop.y = flag.y
-                intel_drop.z = flag.z
-                self.protocol.send_contained(intel_drop, save = True)
+                change_entity.type = SET_CARRIER
+                change_entity.carrier = -1
+                change_entity.entity_id = flag.id
+                self.protocol.send_contained(change_entity, save=True)
+                change_entity.type = SET_POSITION
+                change_entity.x = x
+                change_entity.y = y
+                change_entity.z = z
+                change_entity.entity_id = flag.id
+                self.protocol.send_contained(change_entity, save=True)
                 self.on_flag_drop()
                 break
         elif game_mode == TC_MODE:
@@ -949,48 +978,49 @@ class ServerConnection(BaseConnection):
         state_data.team1_name = blue.name
         state_data.team2_color = green.color
         state_data.team2_name = green.name
+        state_data.team1_score = blue.score
+        state_data.team2_score = green.score
+        state_data.score_limit = self.protocol.max_score
+        state_data.mode_name = "CTF"
         
         game_mode = self.protocol.game_mode
         
         if game_mode == CTF_MODE:
-            blue_base = blue.base
-            blue_flag = blue.flag
-            green_base = green.base
-            green_flag = green.flag
-            ctf_data.cap_limit = self.protocol.max_score
-            ctf_data.team1_score = blue.score
-            ctf_data.team2_score = green.score
+            state_data.entities = []
+            state_data.entities.append(blue.base.to_loader())
+            state_data.entities.append(blue.flag.to_loader())
+            state_data.entities.append(green.base.to_loader())
+            state_data.entities.append(green.flag.to_loader())
+
+
+            # ctf_data.team1_base_x = blue_base.x
+            # ctf_data.team1_base_y = blue_base.y
+            # ctf_data.team1_base_z = blue_base.z
+            #
+            # ctf_data.team2_base_x = green_base.x
+            # ctf_data.team2_base_y = green_base.y
+            # ctf_data.team2_base_z = green_base.z
+            #
+            # if green_flag.player is None:
+            #     ctf_data.team1_has_intel = 0
+            #     ctf_data.team2_flag_x = green_flag.x
+            #     ctf_data.team2_flag_y = green_flag.y
+            #     ctf_data.team2_flag_z = green_flag.z
+            # else:
+            #     ctf_data.team1_has_intel = 1
+            #     ctf_data.team2_carrier = green_flag.player.player_id
+            #
+            # if blue_flag.player is None:
+            #     ctf_data.team2_has_intel = 0
+            #     ctf_data.team1_flag_x = blue_flag.x
+            #     ctf_data.team1_flag_y = blue_flag.y
+            #     ctf_data.team1_flag_z = blue_flag.z
+            # else:
+            #     ctf_data.team2_has_intel = 1
+            #     ctf_data.team1_carrier = blue_flag.player.player_id
             
-            ctf_data.team1_base_x = blue_base.x
-            ctf_data.team1_base_y = blue_base.y
-            ctf_data.team1_base_z = blue_base.z
-            
-            ctf_data.team2_base_x = green_base.x
-            ctf_data.team2_base_y = green_base.y
-            ctf_data.team2_base_z = green_base.z
-            
-            if green_flag.player is None:
-                ctf_data.team1_has_intel = 0
-                ctf_data.team2_flag_x = green_flag.x
-                ctf_data.team2_flag_y = green_flag.y
-                ctf_data.team2_flag_z = green_flag.z
-            else:
-                ctf_data.team1_has_intel = 1
-                ctf_data.team2_carrier = green_flag.player.player_id
-            
-            if blue_flag.player is None:
-                ctf_data.team2_has_intel = 0
-                ctf_data.team1_flag_x = blue_flag.x
-                ctf_data.team1_flag_y = blue_flag.y
-                ctf_data.team1_flag_z = blue_flag.z
-            else:
-                ctf_data.team2_has_intel = 1
-                ctf_data.team1_carrier = blue_flag.player.player_id
-            
-            state_data.state = ctf_data
-            
-        elif game_mode == TC_MODE:
-            state_data.state = tc_data
+        # elif game_mode == TC_MODE:
+        #     state_data.state = tc_data
         
         generated_data = state_data.generate()
         saved_loaders.append(generated_data)
@@ -1215,27 +1245,67 @@ class ServerConnection(BaseConnection):
         pass
 
 class Entity(Vertex3):
+    player = None
     team = None
+    type = None
+
     def __init__(self, id, protocol, *arg, **kw):
         Vertex3.__init__(self, *arg, **kw)
         self.id = id
         self.protocol = protocol
+
+        self.old_team = self.team
+        self.old_pos = self.get()
+        self.old_ply = self.player
     
     def update(self):
-        move_object.object_type = self.id
-        if self.team is None:
-            state = NEUTRAL_TEAM
-        else:
-            state = self.team.id
-        move_object.state = state
-        move_object.x = self.x
-        move_object.y = self.y
-        move_object.z = self.z
-        self.protocol.send_contained(move_object, save = True)
+        change_entity.entity_id = self.id
+
+        if self.team != self.old_team:
+            if self.team is None:
+                state = NEUTRAL_TEAM
+            else:
+                state = self.team.id
+            change_entity.type = SET_STATE
+            change_entity.state = state
+            self.protocol.send_contained(change_entity, save=True)
+            self.old_team = self.team
+
+        if self.old_pos != self.get():
+            change_entity.type = SET_POSITION
+            change_entity.x, change_entity.y, change_entity.z = self.get()
+            self.protocol.send_contained(change_entity, save=True)
+            self.old_pos = self.get()
+
+        if self.player != self.old_ply:
+            if self.player is None:
+                player = -1
+            else:
+                player = self.player
+            change_entity.type = SET_CARRIER
+            change_entity.carrier = player
+            self.protocol.send_contained(change_entity, save=True)
+            self.old_ply = self.player
+
+    def to_loader(self):
+        ent = loaders.Entity()
+        ent.x, ent.y, ent.z = self.get()
+        ent.id = self.id
+        ent.type = self.type
+        ent.carrier = -1 if self.player is None else self.player
+        ent.state = NEUTRAL_TEAM if self.team is None else self.team.id
+        return ent
+
+class AmmoCreate(Entity):
+    type = AMMO_CRATE
+
+class HealthCrate(Entity):
+    type = HEALTH_CRATE
 
 class Flag(Entity):
     player = None
-    
+    type = FLAG
+
     def update(self):
         if self.player is not None:
             return
@@ -1249,6 +1319,7 @@ class Territory(Flag):
     rate_value = 0.0
     finish_call = None
     capturing_team = None
+    type = BASE
     
     def __init__(self, *arg, **kw):
         Flag.__init__(self, *arg, **kw)
@@ -1327,10 +1398,11 @@ class Territory(Flag):
             protocol.reset_game(territory = self)
             protocol.on_game_end()
         else:
-            territory_capture.object_index = self.id
-            territory_capture.state = self.team.id
-            territory_capture.winning = False
-            protocol.send_contained(territory_capture)
+            pass
+            # territory_capture.object_index = self.id
+            # territory_capture.state = self.team.id
+            # territory_capture.winning = False
+            # protocol.send_contained(territory_capture)
         
     def get_progress(self, set = False):
         """
@@ -1355,7 +1427,7 @@ class Territory(Flag):
         return self.protocol.get_random_location(True, (x1, y1, x2, y2))
 
 class Base(Entity):
-    pass
+    type = BASE
 
 class Team(object):
     score = None
@@ -1514,6 +1586,8 @@ class ServerProtocol(BaseProtocol):
         data = ByteWriter()
         contained.write(data)
         data = str(data)
+        if isinstance(contained, loaders.StopSound):
+            print(data)
         packet = enet.Packet(data, flags)
         for player in self.connections.values():
             if player is sender or player.player_id is None:
@@ -1578,22 +1652,12 @@ class ServerProtocol(BaseProtocol):
             self.update_network()
     
     def update_network(self):
-        items = []
-        for i in xrange(32):
-            position = orientation = None
-            try:
-                player = self.players[i]
-                if (not player.filter_visibility_data and 
-                not player.team.spectator):
-                    world_object = player.world_object
-                    position = world_object.position.get()
-                    orientation = world_object.orientation.get()
-            except (KeyError, TypeError, AttributeError):
-                pass
-            if position is None:
-                position = (0.0, 0.0, 0.0)
-                orientation = (0.0, 0.0, 0.0)
-            items.append((position, orientation))
+        items = {}
+        for player in self.players.values():
+            if (player.filter_visibility_data or player.team.spectator):
+                continue
+            world_object = player.world_object
+            items[player.player_id] = (world_object.position.get(), world_object.orientation.get())
         world_update.items = items
         self.send_contained(world_update, unsequenced = True)
     
@@ -1627,16 +1691,17 @@ class ServerProtocol(BaseProtocol):
         if self.game_mode == CTF_MODE:
             if player is None:
                 player = self.players.values()[0]
-            intel_capture.player_id = player.player_id
-            intel_capture.winning = True
-            self.send_contained(intel_capture, save = True)
+
+            # intel_capture.player_id = player.player_id
+            # intel_capture.winning = True
+            # self.send_contained(intel_capture, save = True)
         elif self.game_mode == TC_MODE:
             if territory is None:
                 territory = self.entities[0]
-            territory_capture.object_index = territory.id
-            territory_capture.winning = True
-            territory_capture.state = territory.team.id
-            self.send_contained(territory_capture)
+            # territory_capture.object_index = territory.id
+            # territory_capture.winning = True
+            # territory_capture.state = territory.team.id
+            # self.send_contained(territory_capture)
             self.reset_tc()
         for entity in self.entities:
             entity.update()
@@ -1728,6 +1793,22 @@ class ServerProtocol(BaseProtocol):
     
     def get_fog_color(self):
         return self.fog_color
+
+    def play_sound(self, name, loop_id=None, x=None, y=None, z=None):
+        sound_play.name = name
+        if loop_id is not None:
+            sound_play.looping = True
+            sound_play.loop_id = loop_id
+        if None not in (x, y, z):
+            sound_play.positioned = True
+            sound_play.x = x
+            sound_play.y = y
+            sound_play.z = z
+        self.send_contained(sound_play, save=True)
+
+    def stop_sound(self, loop_id):
+        sound_stop.loop_id = loop_id
+        self.send_contained(sound_stop, save=True)
     
     # events
     

@@ -9,8 +9,8 @@
 *.lo
 *.o
 
-*.so
 *.dylib
+*.dll
 
 *.lai
 *.la
@@ -44,3 +44,7 @@ pyspades/packet.cpp
 pyspades/vxl.cpp
 pyspades/world.cpp
 enet/enet.c
+
+# IDEA
+.idea/
+pyspades/__pycache__/

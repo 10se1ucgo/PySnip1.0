@@ -130,16 +130,27 @@ class Shotgun(BaseWeapon):
     slow_reload = True
     
     damage = {
-        TORSO : 27,
-        HEAD : 37,
-        ARMS : 16,
-        LEGS : 16
+        TORSO : 21,
+        HEAD : 24,
+        ARMS : 14,
+        LEGS : 14
     }
+
+class RPG(BaseWeapon):
+    name = 'RPG'
+    delay = 1.0
+    ammo = 1
+    stock = 5
+    reload_time = 4.0
+    slow_reload = False
+
+    damage = {TORSO: None, HEAD: None, ARMS: None, LEGS: None}
 
 WEAPONS = {
     RIFLE_WEAPON : Rifle,
     SMG_WEAPON : SMG,
     SHOTGUN_WEAPON : Shotgun,
+    RPG_WEAPON: RPG
 }
 
 for id, weapon in WEAPONS.iteritems():
