@@ -318,8 +318,14 @@ class ServerConnection(BaseConnection):
                         if other_flag.player is None and vector_collision(
                         world_object.position, other_flag):
                             self.take_flag()
+                        for entity in self.protocol.entities.values():
+                            collides = vector_collision(world_object.position, entity)
+                            if entity.type == AMMO_CRATE and not entity.destroyed:
+                                if (collides):
+                                    self.refill()
+                                    entity.destroy()
                     elif game_mode == TC_MODE:
-                        for entity in self.protocol.entities:
+                        for entity in self.protocol.entities.values():
                             collides = vector_collision(entity, 
                                 world_object.position, TC_CAPTURE_DISTANCE)
                             if self in entity.players:
@@ -435,29 +441,40 @@ class ServerConnection(BaseConnection):
                         hit_amount = returned
                     player.hit(hit_amount, self, type)
                 elif contained.id == loaders.UseOrientedItem.id:
-                    if contained.tool == GRENADE_TOOL:
-                        print "Player threw grenade"
-                    elif contained.tool == RPG_WEAPON:
-                        print "Player used RPG"
-                    else:
-                        print "Invalid item type."
-
                     if check_nan(contained.value) or check_nan(*contained.position) or check_nan(*contained.velocity):
-                        self.on_hack_attempt("Invalid grenade data")
+                        self.on_hack_attempt("Invalid oriented item data")
                         return
-                    if not self.grenades:
-                        return
-                    self.grenades -= 1
+
                     if not self.is_valid_position(*contained.position):
                         contained.position = self.world_object.position.get()
-                    if self.on_grenade(contained.value) == False:
-                        return
-                    grenade = self.protocol.world.create_object(
-                        world.Grenade, contained.value,
-                        Vertex3(*contained.position), None,
-                        Vertex3(*contained.velocity), self.grenade_exploded)
-                    grenade.team = self.team
-                    self.on_grenade_thrown(grenade)
+
+                    if contained.tool == GRENADE_TOOL:
+                        if not self.grenades:
+                            return
+                        self.grenades -= 1
+                        if self.on_grenade(contained.value) == False:
+                            return
+                        grenade = self.protocol.world.create_object(
+                            world.Grenade, contained.value,
+                            Vertex3(*contained.position), None,
+                            Vertex3(*contained.velocity), self.grenade_exploded)
+                        grenade.team = self.team
+                        self.on_grenade_thrown(grenade)
+                    elif contained.tool == RPG_TOOL:
+                        if self.weapon_object.id != RPG_WEAPON:
+                            return
+
+                        if self.weapon_object.is_empty():
+                            return
+
+                        if self.on_rocket() == False:
+                            return
+
+                        rocket = self.protocol.world.create_object(
+                            world.Rocket, Vertex3(*contained.position), None,
+                            Vertex3(*contained.velocity), 0.25, self.rocket_exploded
+                        )
+                        self.on_rocket_fired(rocket)
                     if self.filter_visibility_data:
                         return
                     contained.player_id = self.player_id
@@ -775,10 +792,8 @@ class ServerConnection(BaseConnection):
         if self.on_flag_take() == False:
             return
         flag.player = self
-        change_entity.carrier = self.player_id
-        change_entity.type = SET_CARRIER
-        change_entity.entity_id = flag.id
-        self.protocol.send_contained(change_entity, save = True)
+        flag.update()
+        self.hud_message("{ply} has taken the {team} intel".format(ply=self.name, team=self.team.other.name))
 
     def capture_flag(self):
         other_team = self.team.other
@@ -820,20 +835,11 @@ class ServerConnection(BaseConnection):
                 z = self.protocol.map.get_z(x, y, z)
                 flag.set(x, y, z)
                 flag.player = None
-                change_entity.type = SET_CARRIER
-                change_entity.carrier = -1
-                change_entity.entity_id = flag.id
-                self.protocol.send_contained(change_entity, save=True)
-                change_entity.type = SET_POSITION
-                change_entity.x = x
-                change_entity.y = y
-                change_entity.z = z
-                change_entity.entity_id = flag.id
-                self.protocol.send_contained(change_entity, save=True)
+                flag.update()
                 self.on_flag_drop()
                 break
         elif game_mode == TC_MODE:
-            for entity in protocol.entities:
+            for entity in protocol.entities.values():
                 if self in entity.players:
                     entity.remove_player(self)
     
@@ -981,16 +987,13 @@ class ServerConnection(BaseConnection):
         state_data.team1_score = blue.score
         state_data.team2_score = green.score
         state_data.score_limit = self.protocol.max_score
-        state_data.mode_name = "CTF"
-        
-        game_mode = self.protocol.game_mode
-        
-        if game_mode == CTF_MODE:
-            state_data.entities = []
-            state_data.entities.append(blue.base.to_loader())
-            state_data.entities.append(blue.flag.to_loader())
-            state_data.entities.append(green.base.to_loader())
-            state_data.entities.append(green.flag.to_loader())
+        state_data.mode_name = self.protocol.get_mode_mode()
+        entities = []
+        for entity in self.protocol.entities.values():
+            entities.append(entity.to_loader())
+        state_data.entities = entities
+
+        # game_mode = self.protocol.game_mode
 
 
             # ctf_data.team1_base_x = blue_base.x
@@ -1023,7 +1026,7 @@ class ServerConnection(BaseConnection):
         #     state_data.state = tc_data
         
         generated_data = state_data.generate()
-        saved_loaders.append(generated_data)
+        saved_loaders.insert(0, generated_data)
         
     def grenade_exploded(self, grenade):
         if self.name is None or self.team.spectator:
@@ -1070,6 +1073,9 @@ class ServerConnection(BaseConnection):
         block_action.player_id = self.player_id
         self.protocol.send_contained(block_action, save = True)
         self.protocol.update_entities()
+
+    def rocket_exploded(self, rocket):
+        self.grenade_exploded(rocket)
     
     def _on_fall(self, damage):
         if not self.hp:
@@ -1115,7 +1121,7 @@ class ServerConnection(BaseConnection):
     def send_data(self, data):
         self.protocol.transport.write(data, self.address)
     
-    def send_chat(self, value, global_message = None):
+    def send_chat(self, value, global_message=None):
         if self.deaf:
             return
         if global_message is None:
@@ -1129,6 +1135,13 @@ class ServerConnection(BaseConnection):
         lines = textwrap.wrap(value, MAX_CHAT_SIZE - len(prefix) - 1)
         for line in lines:
             chat_message.value = '%s%s' % (prefix, line)
+            self.send_contained(chat_message)
+
+    def hud_message(self, value):
+        chat_message.chat_type = CHAT_BIG
+        lines = textwrap.wrap(value, MAX_CHAT_SIZE - 1)
+        for line in lines:
+            chat_message.value = line
             self.send_contained(chat_message)
 
     # events/hooks
@@ -1176,6 +1189,12 @@ class ServerConnection(BaseConnection):
         pass
     
     def on_grenade_thrown(self, grenade):        
+        pass
+
+    def on_rocket(self):
+        pass
+
+    def on_rocket_fired(self, rocket):
         pass
     
     def on_block_build_attempt(self, x, y, z):
@@ -1257,8 +1276,11 @@ class Entity(Vertex3):
         self.old_team = self.team
         self.old_pos = self.get()
         self.old_ply = self.player
+        self.destroyed = False
     
     def update(self):
+        if self.destroyed:
+            return
         change_entity.entity_id = self.id
 
         if self.team != self.old_team:
@@ -1287,12 +1309,21 @@ class Entity(Vertex3):
             self.protocol.send_contained(change_entity, save=True)
             self.old_ply = self.player
 
+    def destroy(self):
+        destroy_entity.entity_id = self.id
+        self.protocol.send_contained(destroy_entity, save=True)
+        self.protocol.entities.pop(self.id)
+        self.protocol.ent_ids.put_back(self.id)
+
+
     def to_loader(self):
+        if self.destroyed:
+            return
         ent = loaders.Entity()
         ent.x, ent.y, ent.z = self.get()
         ent.id = self.id
         ent.type = self.type
-        ent.carrier = -1 if self.player is None else self.player
+        ent.carrier = -1 if self.player is None else self.player.id
         ent.state = NEUTRAL_TEAM if self.team is None else self.team.id
         return ent
 
@@ -1471,7 +1502,7 @@ class Team(object):
         if self.flag is None:
             self.flag = Flag(entity_id, self.protocol)
             self.flag.team = self
-            self.protocol.entities.append(self.flag)
+            self.protocol.entities[self.flag.id] = self.flag
         location = self.get_entity_location(entity_id)
         returned = self.protocol.on_flag_spawn(location[0], location[1], 
                         location[2], self.flag, entity_id)
@@ -1486,7 +1517,7 @@ class Team(object):
         if self.base is None:
             self.base = Base(entity_id, self.protocol)
             self.base.team = self
-            self.protocol.entities.append(self.base)
+            self.protocol.entities[self.base.id] = self.base
         location = self.get_entity_location(entity_id)
         returned = self.protocol.on_base_spawn(location[0], location[1], 
                         location[2], self.base, entity_id)
@@ -1504,7 +1535,7 @@ class Team(object):
             x_offset, 128, 128 + x_offset, 384))
     
     def get_entities(self):
-        for item in self.protocol.entities:
+        for item in self.protocol.entities.values():
             if item.team is self:
                 yield item
 
@@ -1548,9 +1579,11 @@ class ServerProtocol(BaseProtocol):
         # this should not allow additional players.
         self.max_connections = self.max_players + 2
         BaseProtocol.__init__(self, *arg, **kw)
-        self.entities = []
+        self.entities = {}
         self.players = MultikeyDict()
         self.player_ids = IDPool()
+        self.loop_ids = IDPool()
+        self.ent_ids = IDPool(5)  # First 4 are reserved for flags and CPs
         self.spectator_team = self.team_class(-1, self.spectator_name, 
             (0, 0, 0), True, self)
         self.blue_team = self.team_class(0, self.team1_name, self.team1_color,
@@ -1604,19 +1637,19 @@ class ServerProtocol(BaseProtocol):
     
     def reset_tc(self):
         self.entities = self.get_cp_entities()
-        for entity in self.entities:
+        for entity in self.entities.values():
             team = entity.team
             if team is None:
                 entity.progress = 0.5
             else:
                 team.score += 1
                 entity.progress = float(team.id)
-        tc_data.set_entities(self.entities)
+        tc_data.set_entities(self.entities.values())
         self.max_score = len(self.entities)
     
     def get_cp_entities(self):
         # cool algorithm number 1
-        entities = []
+        entities = {}
         land_count = self.map.count_land(0, 0, 512, 512)
         territory_count = int((land_count/(512.0 * 512.0))*(
             MAX_TERRITORY_COUNT-MIN_TERRITORY_COUNT) + MIN_TERRITORY_COUNT)
@@ -1636,7 +1669,7 @@ class ServerProtocol(BaseProtocol):
                 # odd number - neutral
                 team = None
             flag.team = team
-            entities.append(flag)
+            entities[flag.id] = flag
         return entities
     
     def update(self):
@@ -1703,7 +1736,7 @@ class ServerProtocol(BaseProtocol):
             # territory_capture.state = territory.team.id
             # self.send_contained(territory_capture)
             self.reset_tc()
-        for entity in self.entities:
+        for entity in self.entities.values():
             entity.update()
         for player in self.players.values():
             if player.team is not None:
@@ -1761,7 +1794,7 @@ class ServerProtocol(BaseProtocol):
     
     def update_entities(self):
         map = self.map
-        for entity in self.entities:
+        for entity in self.entities.values():
             moved = False
             if map.get_solid(entity.x, entity.y, entity.z - 1):
                 moved = True

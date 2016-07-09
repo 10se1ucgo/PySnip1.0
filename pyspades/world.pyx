@@ -52,9 +52,13 @@ cdef extern from "world_c.cpp":
         
     struct GrenadeType:
         Vector p, v
+
+    struct RocketType:
+        Vector p, v
     PlayerType * create_player()
     void destroy_player(PlayerType * player)
     void destroy_grenade(GrenadeType * player)
+    void destroy_rocket(RocketType * rocket)
     void update_timer(float value, float dt)
     void reorient_player(PlayerType * p, Vector * vector) 
     int move_player(PlayerType * p)
@@ -62,6 +66,8 @@ cdef extern from "world_c.cpp":
     int try_uncrouch(PlayerType * p)
     GrenadeType * create_grenade(Vector * p, Vector * v)
     int move_grenade(GrenadeType * grenade)
+    RocketType *create_rocket(Vector *p, Vector *v)
+    int move_rocket(RocketType * rocket, float mod)
     
 from libc.math cimport sqrt
 
@@ -76,6 +82,7 @@ cdef inline bint cast_ray(VXLData map, float x1, float y1, float z1,
 cdef class Object
 cdef class World
 cdef class Grenade
+cdef class Rocket
 cdef class Character
 
 cdef class Object:
@@ -356,6 +363,56 @@ cdef class Grenade(Object):
     
     def __dealloc__(self):
         destroy_grenade(self.grenade)
+
+cdef class Rocket(Object):
+    cdef public:
+        Vertex3 position, velocity
+        float mod
+        object callback
+        object team
+    cdef RocketType * rocket
+
+    def initialize(self, Vertex3 position, Vertex3 orientation, Vertex3 velocity, float mod, callback = None):
+        self.name = "rocket"
+        self.rocket = create_rocket(position.value, velocity.value)
+        self.position = create_proxy_vector(&self.rocket.p)
+        self.velocity = create_proxy_vector(&self.rocket.v)
+        if orientation is not None:
+            self.velocity += orientation
+        self.callback = callback
+        self.mod = mod
+
+    cdef int update(self, double dt) except -1:
+        if move_rocket(self.rocket, self.mod):
+            if self.callback is not None:
+                self.callback(self)
+            self.delete()
+            return 0
+
+    cdef int hit_test(self, Vertex3 position):
+        cdef Vector * rocket = self.position.value
+        return can_see(self.world.map, position.x, position.y, position.z,
+                       rocket.x, rocket.y, rocket.z)
+
+    cpdef double get_damage(self, Vertex3 player_position):
+        cdef Vector * position = self.position.value
+        cdef double diff_x, diff_y, diff_z
+        diff_x = player_position.x - position.x
+        diff_y = player_position.y - position.y
+        diff_z = player_position.z - position.z
+        cdef double value
+        if (fabs(diff_x) < 16 and
+            fabs(diff_y) < 16 and
+            fabs(diff_z) < 16 and
+            self.hit_test(player_position)):
+            value = diff_x**2 + diff_y**2 + diff_z**2
+            if value == 0.0:
+                return 100.0
+            return 4096.0 / value
+        return 0
+
+    def __dealloc__(self):
+        destroy_rocket(self.rocket)
 
 cdef class World(object):
     cdef public:

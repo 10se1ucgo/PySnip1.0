@@ -72,6 +72,11 @@ struct GrenadeType
     Vector p, v;
 };
 
+struct RocketType
+{
+    Vector p, v;
+};
+
 inline void get_orientation(Orientation * o,
                             float orientation_x, 
                             float orientation_y,
@@ -631,6 +636,13 @@ GrenadeType * create_grenade(Vector * p, Vector * v)
     return g;
 }
 
+RocketType * create_rocket(Vector *p, Vector *v) {
+    RocketType *r = new RocketType;
+    r->p = *p;
+    r->v = *v;
+    return r;
+}
+
 // returns 1 if there was a collision, 2 if sound should be played
 int move_grenade(GrenadeType * g)
 {
@@ -683,6 +695,21 @@ int move_grenade(GrenadeType * g)
     return ret;
 }
 
+int move_rocket(RocketType *r, float mod) {
+    float f = fsynctics * 45;
+    r->v.z += fsynctics * mod;
+    r->p.x += r->v.x*f;
+    r->p.y += r->v.y*f;
+    r->p.z += r->v.z*f;
+
+    LongVector lp;
+    lp.x = (long)floor(r->p.x);
+    lp.y = (long)floor(r->p.y);
+    lp.z = (long)floor(r->p.z);
+
+    return clipworld(lp.x, lp.y, lp.z);
+}
+
 // C interface
 
 PlayerType * create_player()
@@ -710,6 +737,11 @@ void destroy_player(PlayerType * player)
 void destroy_grenade(GrenadeType * grenade)
 {
     delete grenade;
+}
+
+void destroy_rocket(RocketType * rocket)
+{
+    delete rocket;
 }
 
 void set_globals(MapData * map, float time, float dt)

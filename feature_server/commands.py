@@ -498,7 +498,7 @@ def move(connection, player, value, silent = False):
     if silent:
         connection.protocol.irc_say('* ' + message)
     else:
-        connection.protocol.send_chat(message, irc = True)    
+        connection.protocol.send_chat(message, irc = True)
 
 @admin
 def where(connection, value = None):
@@ -809,6 +809,36 @@ def intel(connection):
             return "%s has the enemy intel!" % flag.player.name
     return "Nobody in your team has the enemy intel"
 
+from pyspades.server import AmmoCreate, HealthCrate, create_entity
+
+@admin
+def ammocrate(connection, x, y, z=None):
+    x = float(x)
+    y = float(y)
+    if z is None:
+        z = connection.protocol.map.get_height(x, y) - 2
+    else:
+        z = float(z)
+    crate = AmmoCreate(connection.protocol.ent_ids.pop(), connection.protocol)
+    crate.set(x, y, z)
+    connection.protocol.entities[crate.id] = crate
+    create_entity.entity = crate.to_loader()
+    connection.protocol.send_contained(create_entity, save=True)
+
+@admin
+def setpos(connection, x, y, z=None):
+    x = float(x)
+    y = float(y)
+    if z is None:
+        z = connection.protocol.map.get_height(x, y) - 2
+    else:
+        z = float(z)
+    connection.set_location((x, y, z))
+
+@admin
+def getpos(connection):
+    return str(connection.get_location())
+
 def version(connection):
     return 'Server version is "%s"' % connection.protocol.server_version
 
@@ -838,7 +868,10 @@ def weapon(connection, value):
     else:
         name = player.weapon_object.name
     return '%s has a %s' % (player.name, name)
-    
+
+
+
+
 command_list = [
     help,
     pm,
@@ -898,7 +931,10 @@ command_list = [
     server_info,
     scripts,
     weapon,
-    mapname
+    mapname,
+    ammocrate,
+    setpos,
+    getpos
 ]
 
 commands = {}
